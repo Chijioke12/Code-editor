@@ -4,7 +4,10 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -71,7 +74,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -89,12 +91,15 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import com.example.ui.theme.MyApplicationTheme
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.rgb(43, 43, 43))
+        )
         setContent {
             MyApplicationTheme {
                 val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
@@ -109,10 +114,21 @@ class MainActivity : ComponentActivity() {
                 var newFileName by remember { mutableStateOf("") }
                 var showNewFolderDialog by remember { mutableStateOf(false) }
                 var newFolderName by remember { mutableStateOf("") }
+                var showHtmlPreview by remember { mutableStateOf(false) }
 
                 var codeText by remember { mutableStateOf(TextFieldValue(initialCode)) }
                 var currentUriFile by remember { mutableStateOf<Uri?>(null) }
+                var currentFileName by remember { mutableStateOf<String?>(null) }
                 val context = LocalContext.current
+                
+                // Prompt user to open folder on startup
+                LaunchedEffect(Unit) {
+                    if (workspaceUri == null) {
+                        scope.launch {
+                            drawerState.open()
+                        }
+                    }
+                }
                 
                 val undoStack = remember { mutableStateListOf<TextFieldValue>() }
                 val redoStack = remember { mutableStateListOf<TextFieldValue>() }
@@ -156,6 +172,7 @@ class MainActivity : ComponentActivity() {
                 ) { uri: Uri? ->
                     uri?.let {
                         currentUriFile = it
+                        currentFileName = DocumentFile.fromSingleUri(context, it)?.name
                         try {
                             context.contentResolver.openInputStream(it)?.use { inputStream ->
                                 val text = inputStream.bufferedReader().use { reader -> reader.readText() }
@@ -174,6 +191,7 @@ class MainActivity : ComponentActivity() {
                 ) { uri: Uri? ->
                     uri?.let {
                         currentUriFile = it
+                        currentFileName = DocumentFile.fromSingleUri(context, it)?.name
                         try {
                             context.contentResolver.openOutputStream(it)?.use { outputStream ->
                                 outputStream.bufferedWriter().use { writer ->
@@ -198,7 +216,7 @@ class MainActivity : ComponentActivity() {
                             }
                             Toast.makeText(context, "File saved", Toast.LENGTH_SHORT).show()
                         } catch (e: Exception) {
-                            createDocumentLauncher.launch("code.txt")
+                            createDocumentLauncher.launch(currentFileName ?: "code.txt")
                         }
                     } else {
                         createDocumentLauncher.launch("code.txt")
@@ -393,6 +411,7 @@ class MainActivity : ComponentActivity() {
                                                                 val text = inputStream.bufferedReader().use { reader -> reader.readText() }
                                                                 codeText = TextFieldValue(text)
                                                                 currentUriFile = file.uri
+                                                                currentFileName = file.name
                                                                 undoStack.clear()
                                                                 redoStack.clear()
                                                             }
@@ -425,6 +444,7 @@ class MainActivity : ComponentActivity() {
                         modifier = Modifier.fillMaxSize().imePadding(),
                         topBar = { 
                             CodeEditorTopBar(
+                                title = currentFileName ?: "Code Editor",
                                 onMenuClick = { scope.launch { drawerState.open() } },
                                 onOpenClick = onOpenClick, 
                                 onSaveClick = onSaveClick
@@ -475,9 +495,10 @@ class MainActivity : ComponentActivity() {
                                 onLeftClick = onLeftClick,
                                 onRightClick = onRightClick,
                                 onSaveClick = onSaveClick,
-                                onPlayClick = { Toast.makeText(context, "Run functionality to be added", Toast.LENGTH_SHORT).show() },
+                                onPlayClick = { showHtmlPreview = !showHtmlPreview },
                                 onCloseClick = { 
                                     currentUriFile = null
+                                    currentFileName = null
                                     codeText = TextFieldValue("")
                                     undoStack.clear()
                                     redoStack.clear()
@@ -487,17 +508,32 @@ class MainActivity : ComponentActivity() {
                     }
                 ) { innerPadding ->
                     Box(modifier = Modifier.padding(innerPadding).fillMaxSize()) {
-                        CodeEditorUI(
-                            codeText = codeText,
-                            onCodeChange = { newValue -> 
-                                if (newValue.text != codeText.text) {
-                                    undoStack.add(codeText)
-                                    if (undoStack.size > 100) undoStack.removeFirst()
-                                    redoStack.clear()
+                        if (showHtmlPreview) {
+                            AndroidView(
+                                factory = { ctx ->
+                                    WebView(ctx).apply {
+                                        settings.javaScriptEnabled = true
+                                        webViewClient = WebViewClient()
+                                    }
+                                },
+                                update = { webView ->
+                                    webView.loadDataWithBaseURL(null, codeText.text, "text/html", "UTF-8", null)
+                                },
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        } else {
+                            CodeEditorUI(
+                                codeText = codeText,
+                                onCodeChange = { newValue -> 
+                                    if (newValue.text != codeText.text) {
+                                        undoStack.add(codeText)
+                                        if (undoStack.size > 100) undoStack.removeFirst()
+                                        redoStack.clear()
+                                    }
+                                    codeText = newValue
                                 }
-                                codeText = newValue
-                            }
-                        )
+                            )
+                        }
                     }
                 }
                 } // End ModalNavigationDrawer
@@ -508,9 +544,9 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CodeEditorTopBar(onMenuClick: () -> Unit, onOpenClick: () -> Unit, onSaveClick: () -> Unit) {
+fun CodeEditorTopBar(title: String, onMenuClick: () -> Unit, onOpenClick: () -> Unit, onSaveClick: () -> Unit) {
     TopAppBar(
-        title = { Text("Code Editor", fontFamily = FontFamily.Monospace) },
+        title = { Text(title, fontFamily = FontFamily.Monospace) },
         navigationIcon = {
             IconButton(onClick = onMenuClick) {
                 Icon(Icons.Default.Menu, contentDescription = "Menu", tint = Color(0xFFA9B7C6))
